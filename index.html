@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Mel Spectrogram WASM Demo</title>
+    <link rel="stylesheet" href="index.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>Mel Spectrogram WASM Demo</h1>
+      <input type="file" id="audioInput" accept=".wav" />
+      <canvas id="spectrogram"></canvas>
+      <div id="result"></div>
+      <form id="spectrogramParams">
+        <label for="nfft">nfft</label>
+        <input type="number" id="nfft" value="1024" />
+
+        <label for="win_length">win_length</label>
+        <input type="number" id="win_length" value="400" />
+
+        <label for="hop_length">hop_length</label>
+        <input type="number" id="hop_length" value="160" />
+
+        <label for="f_min">f_min</label>
+        <input type="number" id="f_min" value="0.0" />
+
+        <label for="f_max">f_max</label>
+        <input type="number" id="f_max" value="8000" />
+
+        <label for="n_mels">n_mels</label>
+        <input type="number" id="n_mels" value="80" />
+
+        <label for="top_db">top_db</label>
+        <input type="number" id="top_db" value="80.0" />
+
+        <button type="button" id="reloadSpectrogram">Reload Spectrogram</button>
+      </form>
+    </div>
+
+    <script src="js-colormaps.js"></script>
+    <script type="module">
+      import init, { mel_spectrogram_db } from "./pkg/rust_melspec_wasm.js";
+
+      let currentAudioData = null;
+
+      async function initialize() {
+        await init();
+
+        const audioInput = document.getElementById("audioInput");
+        audioInput.addEventListener("change", handleAudioFile);
+
+        // Load default audio file if no file is selected
+        const defaultFilePath = "1272-128104-0000.wav";
+        const response = await fetch(defaultFilePath);
+        const arrayBuffer = await response.arrayBuffer();
+        const audioContext = new AudioContext({ sampleRate: 16000 });
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        const audioData = audioBuffer.getChannelData(0);
+        
+        // Store the audio data
+        currentAudioData = {
+          data: Array.from(audioData),
+          sampleRate: audioBuffer.sampleRate
+        };
+
+        processAudioData(currentAudioData.data, currentAudioData.sampleRate);
+      }
+
+      async function handleAudioFile(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const arrayBuffer = await file.arrayBuffer();
+        const audioContext = new AudioContext({ sampleRate: 16000 });
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        const audioData = audioBuffer.getChannelData(0);
+
+        // Store the audio data
+        currentAudioData = {
+          data: Array.from(audioData),
+          sampleRate: audioBuffer.sampleRate
+        };
+
+        processAudioData(currentAudioData.data, currentAudioData.sampleRate);
+      }
+
+      function processAudioData(audioData, sampleRate) {
+        // Get parameters from the form
+        const params = {
+          sampleRate: sampleRate,
+          nfft: parseInt(document.getElementById("nfft").value),
+          win_length: parseInt(document.getElementById("win_length").value),
+          hop_length: parseInt(document.getElementById("hop_length").value),
+          f_min: parseFloat(document.getElementById("f_min").value),
+          f_max: parseFloat(document.getElementById("f_max").value),
+          n_mels: parseInt(document.getElementById("n_mels").value),
+          top_db: parseFloat(document.getElementById("top_db").value),
+        };
+
+        try {
+          const melSpec = mel_spectrogram_db(
+            params.sampleRate,
+            audioData,
+            params.nfft,
+            params.win_length,
+            params.hop_length,
+            params.f_min,
+            params.f_max,
+            params.n_mels,
+            params.top_db
+          );
+
+          displaySpectrogram(melSpec);
+          document.getElementById(
+            "result"
+          ).textContent = `Mel Spectrogram shape: ${melSpec.length} × ${melSpec[0].length}`;
+        } catch (error) {
+          console.error("Error processing audio:", error);
+        }
+      }
+
+      function displaySpectrogram(melSpec) {
+        const canvas = document.getElementById("spectrogram");
+        const ctx = canvas.getContext("2d");
+
+        // Transpose dimensions for the display
+        canvas.width = melSpec.length; // mel bands (now horizontal)
+        canvas.height = melSpec[0].length; // time steps (now vertical)
+
+        // Find min and max values for normalization
+        let smin = Infinity;
+        let smax = -Infinity;
+
+        // Loop through the 2D melSpec array to find min and max
+        for (let i = 0; i < melSpec.length; i++) {
+          for (let j = 0; j < melSpec[i].length; j++) {
+            if (melSpec[i][j] < smin) smin = melSpec[i][j];
+            if (melSpec[i][j] > smax) smax = melSpec[i][j];
+          }
+        }
+
+        // Create image data
+        const imageData = new ImageData(canvas.width, canvas.height);
+
+        // Fill the image data with transposed coordinates
+        for (let i = 0; i < melSpec.length; i++) {
+          for (let j = 0; j < melSpec[i].length; j++) {
+            // Normalize value to 0-255 range
+            const num = Math.floor(
+              (255 * (melSpec[i][j] - smin)) / (smax - smin)
+            );
+
+            // Calculate position in imageData array (4 bytes per pixel: R,G,B,A)
+            const redIndex = ((canvas.height - j - 1) * canvas.width + i) * 4; // Inverted y-coordinate
+
+            // Set color values from the colormap
+            const colors = window.evaluate_cmap(num / 255, "viridis", false);
+            imageData.data[redIndex] = colors[0]; // R
+            imageData.data[redIndex + 1] = colors[1]; // G
+            imageData.data[redIndex + 2] = colors[2]; // B
+            imageData.data[redIndex + 3] = 255; // A
+          }
+        }
+
+        // Draw the image
+        ctx.putImageData(imageData, 0, 0);
+      }
+
+      // Update the reload button event listener
+      document
+        .getElementById("reloadSpectrogram")
+        .addEventListener("click", () => {
+          if (currentAudioData) {
+            processAudioData(currentAudioData.data, currentAudioData.sampleRate);
+          }
+        });
+
+      initialize().catch(console.error);
+    </script>
+  </body>
+</html>
