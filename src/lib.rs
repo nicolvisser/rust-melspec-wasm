@@ -67,8 +67,9 @@ fn spectrogram(
     onesided: bool,
 ) -> Vec<Vec<f32>> {
     assert!(n_fft >= win_length);
+    assert!(win_length >= hop_length);
 
-    let pad_size = n_fft / 2;
+    let pad_size = (win_length - hop_length) / 2;
 
     let padded_waveform: Vec<f32> = vec![0.0; pad_size]
         .into_iter()
